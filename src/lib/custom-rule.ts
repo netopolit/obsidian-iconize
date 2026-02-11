@@ -1,4 +1,4 @@
-import { Plugin, TAbstractFile } from 'obsidian';
+import { Plugin, TAbstractFile, TFolder } from 'obsidian';
 import IconizePlugin from '@app/main';
 import { CustomRule } from '@app/settings/data';
 import { getFileItemTitleEl } from '@app/util';
@@ -28,22 +28,24 @@ const doesMatchFileType = (
 
 /**
  * Determines whether a given file or folder matches a specified custom rule.
+ * Uses in-memory vault metadata instead of filesystem stat() calls.
  * @param plugin Plugin instance.
  * @param rule CustomRule to check against the file or folder.
  * @param filePath String to check against the custom rule.
- * @returns Promise that resolves to `true` if the file matches the rule, `false` otherwise.
+ * @returns `true` if the file matches the rule, `false` otherwise.
  */
-const isApplicable = async (
+const isApplicable = (
   plugin: Plugin,
   rule: CustomRule,
   filePath: string,
-): Promise<boolean> => {
-  const metadata = await plugin.app.vault.adapter.stat(filePath);
-  if (!metadata) {
+): boolean => {
+  const abstractFile = plugin.app.vault.getAbstractFileByPath(filePath);
+  if (!abstractFile) {
     return false;
   }
 
-  const fileType = metadata.type;
+  const fileType: CustomRuleFileType =
+    abstractFile instanceof TFolder ? 'folder' : 'file';
 
   const doesMatch = doesMatchFileType(rule, fileType);
 
@@ -59,10 +61,7 @@ const isApplicable = async (
  * @param plugin IconizePlugin instance.
  * @param rule CustomRule where the icons will be removed based on this rule.
  */
-const removeFromAllFiles = async (
-  plugin: IconizePlugin,
-  rule: CustomRule,
-): Promise<void> => {
+const removeFromAllFiles = (plugin: IconizePlugin, rule: CustomRule): void => {
   const nodesWithIcon = document.querySelectorAll(
     `[${config.ICON_ATTRIBUTE_NAME}="${rule.icon}"]`,
   );
@@ -80,7 +79,13 @@ const removeFromAllFiles = async (
       continue;
     }
 
-    const fileType = (await plugin.app.vault.adapter.stat(dataPath)).type;
+    const abstractFile = plugin.app.vault.getAbstractFileByPath(dataPath);
+    if (!abstractFile) {
+      continue;
+    }
+
+    const fileType: CustomRuleFileType =
+      abstractFile instanceof TFolder ? 'folder' : 'file';
     if (doesMatchPath(rule, dataPath) && doesMatchFileType(rule, fileType)) {
       dom.removeIconInNode(parent);
       IconCache.getInstance().invalidate(dataPath);
@@ -104,13 +109,10 @@ const getSortedRules = (plugin: IconizePlugin): CustomRule[] => {
  * @param plugin IconizePlugin instance.
  * @param rule CustomRule that will be applied, if applicable, to all files and folders.
  */
-const addToAllFiles = async (
-  plugin: IconizePlugin,
-  rule: CustomRule,
-): Promise<void> => {
-  const fileItems = await getFileItems(plugin, rule);
+const addToAllFiles = (plugin: IconizePlugin, rule: CustomRule): void => {
+  const fileItems = getFileItems(plugin, rule);
   for (const fileItem of fileItems) {
-    await add(plugin, rule, fileItem.file, getFileItemTitleEl(fileItem));
+    add(plugin, rule, fileItem.file, getFileItemTitleEl(fileItem));
   }
 };
 
@@ -122,14 +124,14 @@ const addToAllFiles = async (
  * or directory.
  * @param file TAbstractFile that will be used to possibly create the icon for.
  * @param container HTMLElement where the icon will be added if the custom rules matches.
- * @returns A promise that resolves to `true` if the icon was added, `false` otherwise.
+ * @returns `true` if the icon was added, `false` otherwise.
  */
-const add = async (
+const add = (
   plugin: IconizePlugin,
   rule: CustomRule,
   file: TAbstractFile,
   container?: HTMLElement,
-): Promise<boolean> => {
+): boolean => {
   if (container && dom.doesElementHasIconNode(container)) {
     return false;
   }
@@ -140,7 +142,7 @@ const add = async (
     return false;
   }
 
-  const doesMatch = await isApplicable(plugin, rule, file.path);
+  const doesMatch = isApplicable(plugin, rule, file.path);
   if (doesMatch) {
     IconCache.getInstance().set(file.path, {
       iconNameWithPrefix: rule.icon,
@@ -157,6 +159,12 @@ const add = async (
 };
 
 /**
+ * Cache for compiled RegExp objects, keyed by rule string.
+ * Avoids recompiling the same regex thousands of times when checking all files.
+ */
+const regexCache = new Map<string, RegExp | null>();
+
+/**
  * Determines whether a given rule exists in a given path.
  * @param rule Rule to check for.
  * @param path Path to check in.
@@ -164,35 +172,37 @@ const add = async (
  */
 const doesMatchPath = (rule: CustomRule, path: string): boolean => {
   const toMatch = rule.useFilePath ? path : path.split('/').pop();
-  try {
-    // Rule is in some sort of regex.
-    const regex = new RegExp(rule.rule);
-    if (toMatch.match(regex)) {
-      return true;
+
+  if (!regexCache.has(rule.rule)) {
+    try {
+      regexCache.set(rule.rule, new RegExp(rule.rule));
+    } catch {
+      // Rule is not valid regex — store null to indicate string matching.
+      regexCache.set(rule.rule, null);
     }
-  } catch {
-    // Rule is not in some sort of regex, check for basic string match.
+  }
+
+  const regex = regexCache.get(rule.rule);
+  if (regex === null) {
+    // Rule is not valid regex, use basic string match.
     return toMatch.includes(rule.rule);
   }
 
-  return false;
+  return regex.test(toMatch);
 };
 
 /**
  * Gets all the file items that can be applied to the specific custom rule.
  * @param plugin Instance of IconizePlugin.
  * @param rule Custom rule that will be checked for.
- * @returns A promise that resolves to an array of file items that match the custom rule.
+ * @returns An array of file items that match the custom rule.
  */
-const getFileItems = async (
-  plugin: IconizePlugin,
-  rule: CustomRule,
-): Promise<FileItem[]> => {
+const getFileItems = (plugin: IconizePlugin, rule: CustomRule): FileItem[] => {
   const result: FileItem[] = [];
   for (const fileExplorer of plugin.getRegisteredFileExplorers()) {
     const files = Object.values(fileExplorer.fileItems || {});
     for (const fileItem of files) {
-      if (await isApplicable(plugin, rule, fileItem.file.path)) {
+      if (isApplicable(plugin, rule, fileItem.file.path)) {
         result.push(fileItem);
       }
     }

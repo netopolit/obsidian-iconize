@@ -20,12 +20,33 @@ interface OutlineView extends View {
 }
 
 export default class OutlineInternalPlugin extends InternalPluginInjector {
+  private observer: MutationObserver | null = null;
+  private cachedIconShortcodeRegex: RegExp | null = null;
+  private cachedNavItemSize: number | null = null;
+
   constructor(plugin: IconizePlugin) {
     super(plugin);
   }
 
   onMount(): void {
     // TODO: Might improve the performance here.
+  }
+
+  private getIconShortcodeRegex(): RegExp {
+    if (!this.cachedIconShortcodeRegex) {
+      this.cachedIconShortcodeRegex = createIconShortcodeRegex(this.plugin);
+    }
+    return this.cachedIconShortcodeRegex;
+  }
+
+  private getNavItemSize(): number {
+    if (this.cachedNavItemSize === null) {
+      this.cachedNavItemSize = parseFloat(
+        getComputedStyle(document.body).getPropertyValue('--nav-item-size') ??
+          '16',
+      );
+    }
+    return this.cachedNavItemSize;
   }
 
   register(): void {
@@ -37,97 +58,73 @@ export default class OutlineInternalPlugin extends InternalPluginInjector {
       return;
     }
 
-    const updateTreeItems = () => {
-      if (!this.leaf?.view?.tree) {
-        return;
-      }
+    // Prevent duplicate registrations — disconnect previous observer first.
+    if (this.registered && this.observer) {
+      this.observer.disconnect();
+      this.observer = null;
+    }
+    this.registered = true;
 
+    const processTreeItems = (root: Element) => {
       const treeItems = Array.from(
-        this.leaf.view.tree.containerEl.querySelectorAll(`.${TREE_ITEM_CLASS}`),
+        root.querySelectorAll(`.${TREE_ITEM_CLASS}`),
       );
       for (const treeItem of treeItems) {
         const treeItemInner = treeItem.querySelector(`.${TREE_ITEM_INNER}`);
-        let text = treeItemInner?.getText();
-        if (!text) {
-          continue;
-        }
-
-        const iconShortcodeRegex = createIconShortcodeRegex(this.plugin);
-        const iconIdentifierLength =
-          this.plugin.getSettings().iconIdentifier.length;
-
-        let trimmedLength = 0;
-        for (const code of [...text.matchAll(iconShortcodeRegex)]
-          .sort((a, b) => a.index - b.index)
-          .map((arr) => ({ text: arr[0], index: arr.index! }))) {
-          const shortcode = code.text;
-          const iconName = shortcode.slice(
-            iconIdentifierLength,
-            shortcode.length - iconIdentifierLength,
-          );
-          const iconObject = icon.getIconByName(this.plugin, iconName);
-          if (iconObject) {
-            const startIndex = code.index - trimmedLength;
-            const endIndex = code.index + code.text.length - trimmedLength;
-
-            const str =
-              text.substring(0, startIndex) + text.substring(endIndex);
-
-            const iconSpan = createSpan({
-              cls: 'cm-iconize-icon',
-              attr: {
-                'aria-label': iconName,
-                'data-icon': iconName,
-                'aria-hidden': 'true',
-              },
-            });
-            const fontSize = parseFloat(
-              getComputedStyle(document.body).getPropertyValue(
-                '--nav-item-size',
-              ) ?? '16',
-            );
-            const svgElement = svg.setFontSize(iconObject.svgElement, fontSize);
-            iconSpan.style.display = 'inline-flex';
-            iconSpan.style.transform = 'translateY(13%)';
-            iconSpan.innerHTML = svgElement;
-            treeItemInner.innerHTML = treeItemInner.innerHTML.replace(
-              shortcode,
-              iconSpan.outerHTML,
-            );
-
-            text = str;
-            trimmedLength += code.text.length;
-          }
-        }
+        this.processTreeItemInner(treeItemInner);
       }
     };
 
     const setOutlineIcons = () => {
       this.plugin.getEventEmitter().once('allIconsLoaded', () => {
-        updateTreeItems();
+        // Invalidate caches when icons reload.
+        this.cachedIconShortcodeRegex = null;
+        this.cachedNavItemSize = null;
+
+        processTreeItems(this.leaf.view.tree.containerEl);
 
         const callback = (mutations: MutationRecord[]) => {
-          mutations.forEach((mutation) => {
-            if (mutation.type !== 'childList') {
-              return;
-            }
-
-            const addedNodes = mutation.addedNodes;
-            if (addedNodes.length === 0) {
-              return;
-            }
-
-            updateTreeItems();
-          });
-
           if (!this.enabled) {
-            observer.disconnect();
+            this.observer?.disconnect();
+            this.observer = null;
+            return;
+          }
+
+          // Process only added nodes from mutation records.
+          for (const mutation of mutations) {
+            if (
+              mutation.type !== 'childList' ||
+              mutation.addedNodes.length === 0
+            ) {
+              continue;
+            }
+
+            const addedNodes = Array.from(mutation.addedNodes);
+            for (const node of addedNodes) {
+              if (!(node instanceof HTMLElement)) {
+                continue;
+              }
+
+              // Check if the added node itself is a tree item.
+              if (node.classList?.contains(TREE_ITEM_CLASS)) {
+                const inner = node.querySelector(`.${TREE_ITEM_INNER}`);
+                this.processTreeItemInner(inner);
+              } else {
+                // Check children of the added node.
+                const items = Array.from(
+                  node.querySelectorAll(`.${TREE_ITEM_CLASS}`),
+                );
+                for (const item of items) {
+                  const inner = item.querySelector(`.${TREE_ITEM_INNER}`);
+                  this.processTreeItemInner(inner);
+                }
+              }
+            }
           }
         };
 
-        const observer = new MutationObserver(callback);
-
-        observer.observe(this.leaf.view.tree.containerEl, {
+        this.observer = new MutationObserver(callback);
+        this.observer.observe(this.leaf.view.tree.containerEl, {
           childList: true,
           subtree: true,
         });
@@ -135,10 +132,63 @@ export default class OutlineInternalPlugin extends InternalPluginInjector {
     };
 
     if (requireApiVersion('1.7.2')) {
-      // TODO: Might improve the performance here.
       this.leaf.loadIfDeferred().then(setOutlineIcons);
     } else {
       setOutlineIcons();
+    }
+  }
+
+  private processTreeItemInner(treeItemInner: Element | null): void {
+    if (!treeItemInner) {
+      return;
+    }
+
+    let text = treeItemInner.getText();
+    if (!text) {
+      return;
+    }
+
+    const iconShortcodeRegex = this.getIconShortcodeRegex();
+    const iconIdentifierLength =
+      this.plugin.getSettings().iconIdentifier.length;
+
+    let trimmedLength = 0;
+    for (const code of [...text.matchAll(iconShortcodeRegex)]
+      .sort((a, b) => a.index - b.index)
+      .map((arr) => ({ text: arr[0], index: arr.index! }))) {
+      const shortcode = code.text;
+      const iconName = shortcode.slice(
+        iconIdentifierLength,
+        shortcode.length - iconIdentifierLength,
+      );
+      const iconObject = icon.getIconByName(this.plugin, iconName);
+      if (iconObject) {
+        const startIndex = code.index - trimmedLength;
+        const endIndex = code.index + code.text.length - trimmedLength;
+
+        const str = text.substring(0, startIndex) + text.substring(endIndex);
+
+        const iconSpan = createSpan({
+          cls: 'cm-iconize-icon',
+          attr: {
+            'aria-label': iconName,
+            'data-icon': iconName,
+            'aria-hidden': 'true',
+          },
+        });
+        const fontSize = this.getNavItemSize();
+        const svgElement = svg.setFontSize(iconObject.svgElement, fontSize);
+        iconSpan.style.display = 'inline-flex';
+        iconSpan.style.transform = 'translateY(13%)';
+        iconSpan.innerHTML = svgElement;
+        treeItemInner.innerHTML = treeItemInner.innerHTML.replace(
+          shortcode,
+          iconSpan.outerHTML,
+        );
+
+        text = str;
+        trimmedLength += code.text.length;
+      }
     }
   }
 

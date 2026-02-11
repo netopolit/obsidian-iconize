@@ -68,8 +68,8 @@ const add = async (
 
   // Add icons to tabs if a custom rule is applicable.
   for (const rule of customRule.getSortedRules(plugin)) {
-    const isApplicable = await customRule.isApplicable(plugin, rule, filePath);
-    if (isApplicable) {
+    const applicable = customRule.isApplicable(plugin, rule, filePath);
+    if (applicable) {
       dom.setIconForNode(plugin, rule.icon, iconContainer, {
         color: rule.color,
       });

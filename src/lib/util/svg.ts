@@ -47,6 +47,10 @@ const extract = (svgString: string): string => {
   return svg.outerHTML;
 };
 
+const fontSizeCache = new Map<string, string>();
+const widthRe = /width="[\d.]+(px)?"/;
+const heightRe = /height="[\d.]+(px)?"/;
+
 /**
  * Sets the font size of an SVG string by modifying its width and/or height attributes.
  * The font size will be always set in pixels.
@@ -55,16 +59,24 @@ const extract = (svgString: string): string => {
  * @returns Modified SVG string.
  */
 const setFontSize = (svgString: string, fontSize: number): string => {
-  const widthRe = new RegExp(/width="[\d.]+(px)?"/);
-  const heightRe = new RegExp(/height="[\d.]+(px)?"/);
-  if (svgString.match(widthRe)) {
-    svgString = svgString.replace(widthRe, `width="${fontSize}px"`);
+  const cacheKey = `${fontSize}:${svgString}`;
+  const cached = fontSizeCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
   }
-  if (svgString.match(heightRe)) {
-    svgString = svgString.replace(heightRe, `height="${fontSize}px"`);
+
+  let result = svgString;
+  if (result.match(widthRe)) {
+    result = result.replace(widthRe, `width="${fontSize}px"`);
   }
-  return svgString;
+  if (result.match(heightRe)) {
+    result = result.replace(heightRe, `height="${fontSize}px"`);
+  }
+  fontSizeCache.set(cacheKey, result);
+  return result;
 };
+
+const colorizeCache = new Map<string, string>();
 
 /**
  * Replaces the fill or stroke color of an SVG string with a given color.
@@ -80,11 +92,18 @@ const colorize = (
     color = 'currentColor';
   }
 
+  const cacheKey = `${color}:${svgString}`;
+  const cached = colorizeCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const parser = new DOMParser();
   // Tries to parse the string into a HTML node.
   const parsedNode = parser.parseFromString(svgString, 'text/html');
   const svg = parsedNode.querySelector('svg');
 
+  let result: string;
   if (svg) {
     if (svg.hasAttribute('fill') && svg.getAttribute('fill') !== 'none') {
       svg.setAttribute('fill', color);
@@ -95,10 +114,13 @@ const colorize = (
       svg.setAttribute('stroke', color);
     }
 
-    return svg.outerHTML;
+    result = svg.outerHTML;
+  } else {
+    result = svgString;
   }
 
-  return svgString;
+  colorizeCache.set(cacheKey, result);
+  return result;
 };
 
 export default {

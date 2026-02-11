@@ -30,11 +30,20 @@ export const readFileSync = async (file: File): Promise<string> => {
 /**
  * Gets all the currently opened files by getting the markdown leaves and then checking
  * for the `file` property in the view. This also returns the leaf of the file.
+ * Results are cached per microtask to avoid redundant work when called multiple times
+ * within the same event cycle.
  * @param plugin Instance of the IconizePlugin.
  * @returns An array of {@link FileWithLeaf} objects.
  */
+let cachedOpenedFiles: FileWithLeaf[] | null = null;
+let cacheInvalidationScheduled = false;
+
 export const getAllOpenedFiles = (plugin: IconizePlugin): FileWithLeaf[] => {
-  return plugin.app.workspace
+  if (cachedOpenedFiles !== null) {
+    return cachedOpenedFiles;
+  }
+
+  cachedOpenedFiles = plugin.app.workspace
     .getLeavesOfType('markdown')
     .reduce<FileWithLeaf[]>((prev, curr) => {
       const file = curr.view.file;
@@ -43,6 +52,16 @@ export const getAllOpenedFiles = (plugin: IconizePlugin): FileWithLeaf[] => {
       }
       return prev;
     }, []);
+
+  if (!cacheInvalidationScheduled) {
+    cacheInvalidationScheduled = true;
+    Promise.resolve().then(() => {
+      cachedOpenedFiles = null;
+      cacheInvalidationScheduled = false;
+    });
+  }
+
+  return cachedOpenedFiles;
 };
 
 /**

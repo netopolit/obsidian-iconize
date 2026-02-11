@@ -54,7 +54,7 @@ export default async function migrate(plugin: IconizePlugin): Promise<void> {
       plugin.getSettings().rules.unshift(newRule);
 
       // Apply the custom rule.
-      await customRule.addToAllFiles(plugin, newRule);
+      customRule.addToAllFiles(plugin, newRule);
       hasRemovedInheritance = true;
     }
 

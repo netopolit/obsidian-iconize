@@ -58,6 +58,19 @@ import {
   nextIdentifier,
 } from './icon-pack-manager/util';
 
+function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  return function (this: any, ...args: any[]) {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+    }
+    timeoutId = setTimeout(() => {
+      timeoutId = null;
+      fn.apply(this, args);
+    }, delay);
+  } as T;
+}
+
 export interface FolderIconObject {
   iconName: string | null;
   iconColor?: string;
@@ -71,6 +84,7 @@ export default class IconizePlugin extends Plugin {
   private registeredFileExplorers = new Set<ExplorerView>();
 
   private modifiedInternalPlugins: InternalPluginInjector[] = [];
+  private eventsRegistered = false;
 
   public positionField: PositionField = buildPositionField(this);
 
@@ -207,7 +221,10 @@ export default class IconizePlugin extends Plugin {
     );
 
     this.registerEvent(
-      this.app.workspace.on('layout-change', () => this.handleChangeLayout()),
+      this.app.workspace.on(
+        'layout-change',
+        debounce(() => this.handleChangeLayout(), 100),
+      ),
     );
 
     this.registerEvent(
@@ -352,7 +369,7 @@ export default class IconizePlugin extends Plugin {
 
     // Refreshes the icon tab and title icon for custom rules.
     for (const rule of customRule.getSortedRules(this)) {
-      const applicable = await customRule.isApplicable(this, rule, file.path);
+      const applicable = customRule.isApplicable(this, rule, file.path);
       if (applicable) {
         customRule.add(this, rule, file);
         this.addIconInTitle(rule.icon);
@@ -449,66 +466,134 @@ export default class IconizePlugin extends Plugin {
         }
       }
 
-      // Register rename event for adding icons with custom rules to the DOM
-      // when file was moved to another directory.
-      this.registerEvent(
-        this.app.vault.on('rename', async (file, oldPath) => {
-          const sortedRules = customRule.getSortedRules(this);
+      // Only register these event handlers once to prevent duplicate listeners.
+      if (!this.eventsRegistered) {
+        this.eventsRegistered = true;
 
-          // Removes possible icons from the renamed file.
-          sortedRules.forEach((rule) => {
-            if (customRule.doesMatchPath(rule, oldPath)) {
-              dom.removeIconInPath(file.path);
+        // Register rename event for adding icons with custom rules to the DOM
+        // when file was moved to another directory.
+        this.registerEvent(
+          this.app.vault.on('rename', (file, oldPath) => {
+            const sortedRules = customRule.getSortedRules(this);
+
+            // Removes possible icons from the renamed file.
+            sortedRules.forEach((rule) => {
+              if (customRule.doesMatchPath(rule, oldPath)) {
+                dom.removeIconInPath(file.path);
+              }
+            });
+
+            // Adds possible icons to the renamed file.
+            sortedRules.forEach((rule) => {
+              if (customRule.doesMatchPath(rule, oldPath)) {
+                return;
+              }
+
+              customRule.add(this, rule, file, undefined);
+            });
+
+            // Updates icon tabs for the renamed file.
+            for (const rule of customRule.getSortedRules(this)) {
+              const applicable = customRule.isApplicable(this, rule, file.path);
+              if (!applicable) {
+                continue;
+              }
+
+              const openedFiles = getAllOpenedFiles(this);
+              const openedFile = openedFiles.find(
+                (openedFile) => openedFile.path === file.path,
+              );
+              if (openedFile) {
+                const leaf = openedFile.leaf as TabHeaderLeaf;
+                iconTabs.update(this, rule.icon, leaf.tabHeaderInnerIconEl);
+              }
+              break;
             }
-          });
+          }),
+        );
 
-          // Adds possible icons to the renamed file.
-          sortedRules.forEach((rule) => {
-            if (customRule.doesMatchPath(rule, oldPath)) {
+        // Register `layout-change` event for adding icons to tabs when moving a pane or
+        // enabling reading mode.
+        this.registerEvent(
+          this.app.workspace.on(
+            'layout-change',
+            debounce(() => {
+              if (this.getSettings().iconInTitleEnabled) {
+                const activeView =
+                  this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (activeView) {
+                  const file = activeView.file;
+                  const view = (activeView.leaf.view as any).currentMode
+                    .view as InlineTitleView;
+                  const iconNameWithPrefix = icon.getByPath(this, file.path);
+                  if (!iconNameWithPrefix) {
+                    titleIcon.hide(view.inlineTitleEl);
+                    return;
+                  }
+
+                  let foundIcon: string = iconNameWithPrefix;
+                  if (!emoji.isEmoji(foundIcon)) {
+                    foundIcon = icon.getIconByName(
+                      this,
+                      iconNameWithPrefix,
+                    )?.svgElement;
+                    // Check for preloaded icons if no icon was found when the start up was faster
+                    // than the loading of the icons.
+                    if (
+                      !foundIcon &&
+                      this.iconPackManager.getPreloadedIcons().length > 0
+                    ) {
+                      foundIcon = this.iconPackManager
+                        .getPreloadedIcons()
+                        .find(
+                          (icon) =>
+                            icon.prefix + icon.name === iconNameWithPrefix,
+                        )?.svgElement;
+                    }
+                  }
+
+                  if (foundIcon) {
+                    // Removes the node because the editor markdown content is being rerendered
+                    // when the content mode changes back to editing.
+                    titleIcon.remove(view.inlineTitleEl);
+                    titleIcon.add(this, view.inlineTitleEl, foundIcon, {
+                      fontSize: calculateInlineTitleSize(),
+                    });
+                  }
+                }
+              }
+
+              if (!this.getSettings().iconInTabsEnabled) {
+                return;
+              }
+
+              for (const openedFile of getAllOpenedFiles(this)) {
+                const leaf = openedFile.leaf as TabHeaderLeaf;
+                const iconColor = this.getIconColor(leaf.view.file.path);
+                iconTabs.add(this, openedFile.path, leaf.tabHeaderInnerIconEl, {
+                  iconColor,
+                });
+              }
+            }, 100),
+          ),
+        );
+
+        // Register `file-open` event for adding icon to title.
+        this.registerEvent(
+          this.app.workspace.on('file-open', (file) => {
+            if (!this.getSettings().iconInTitleEnabled) {
               return;
             }
 
-            customRule.add(this, rule, file, undefined);
-          });
+            for (const openedFile of getAllOpenedFiles(this)) {
+              if (!file || !openedFile || openedFile.path !== file.path) {
+                continue;
+              }
 
-          // Updates icon tabs for the renamed file.
-          for (const rule of customRule.getSortedRules(this)) {
-            const applicable = await customRule.isApplicable(
-              this,
-              rule,
-              file.path,
-            );
-            if (!applicable) {
-              continue;
-            }
-
-            const openedFiles = getAllOpenedFiles(this);
-            const openedFile = openedFiles.find(
-              (openedFile) => openedFile.path === file.path,
-            );
-            if (openedFile) {
-              const leaf = openedFile.leaf as TabHeaderLeaf;
-              iconTabs.update(this, rule.icon, leaf.tabHeaderInnerIconEl);
-            }
-            break;
-          }
-        }),
-      );
-
-      // Register `layout-change` event for adding icons to tabs when moving a pane or
-      // enabling reading mode.
-      this.registerEvent(
-        this.app.workspace.on('layout-change', () => {
-          if (this.getSettings().iconInTitleEnabled) {
-            const activeView =
-              this.app.workspace.getActiveViewOfType(MarkdownView);
-            if (activeView) {
-              const file = activeView.file;
-              const view = (activeView.leaf.view as any).currentMode
-                .view as InlineTitleView;
+              const leaf = openedFile.leaf.view as InlineTitleView;
               const iconNameWithPrefix = icon.getByPath(this, file.path);
               if (!iconNameWithPrefix) {
-                titleIcon.hide(view.inlineTitleEl);
+                titleIcon.hide(leaf.inlineTitleEl);
                 return;
               }
 
@@ -533,231 +618,171 @@ export default class IconizePlugin extends Plugin {
               }
 
               if (foundIcon) {
-                // Removes the node because the editor markdown content is being rerendered
-                // when the content mode changes back to editing.
-                titleIcon.remove(view.inlineTitleEl);
-                titleIcon.add(this, view.inlineTitleEl, foundIcon, {
+                titleIcon.add(this, leaf.inlineTitleEl, foundIcon, {
                   fontSize: calculateInlineTitleSize(),
                 });
+              } else {
+                titleIcon.hide(leaf.inlineTitleEl);
               }
             }
-          }
+          }),
+        );
 
-          if (!this.getSettings().iconInTabsEnabled) {
-            return;
-          }
-
-          for (const openedFile of getAllOpenedFiles(this)) {
-            const leaf = openedFile.leaf as TabHeaderLeaf;
-            const iconColor = this.getIconColor(leaf.view.file.path);
-            iconTabs.add(this, openedFile.path, leaf.tabHeaderInnerIconEl, {
-              iconColor,
-            });
-          }
-        }),
-      );
-
-      // Register `file-open` event for adding icon to title.
-      this.registerEvent(
-        this.app.workspace.on('file-open', (file) => {
-          if (!this.getSettings().iconInTitleEnabled) {
-            return;
-          }
-
-          for (const openedFile of getAllOpenedFiles(this)) {
-            if (!file || !openedFile || openedFile.path !== file.path) {
-              continue;
-            }
-
-            const leaf = openedFile.leaf.view as InlineTitleView;
-            const iconNameWithPrefix = icon.getByPath(this, file.path);
-            if (!iconNameWithPrefix) {
-              titleIcon.hide(leaf.inlineTitleEl);
+        // Register event for frontmatter icon registration.
+        this.registerEvent(
+          this.app.metadataCache.on('resolve', async (file) => {
+            if (!this.getSettings().iconInFrontmatterEnabled) {
               return;
             }
 
-            let foundIcon: string = iconNameWithPrefix;
-            if (!emoji.isEmoji(foundIcon)) {
-              foundIcon = icon.getIconByName(
-                this,
-                iconNameWithPrefix,
-              )?.svgElement;
-              // Check for preloaded icons if no icon was found when the start up was faster
-              // than the loading of the icons.
-              if (
-                !foundIcon &&
-                this.iconPackManager.getPreloadedIcons().length > 0
-              ) {
-                foundIcon = this.iconPackManager
-                  .getPreloadedIcons()
-                  .find(
-                    (icon) => icon.prefix + icon.name === iconNameWithPrefix,
-                  )?.svgElement;
+            const fileCache = this.app.metadataCache.getFileCache(file);
+            const iconFrontmatterName =
+              this.getSettings().iconInFrontmatterFieldName;
+            const iconColorFrontmatterName =
+              this.getSettings().iconColorInFrontmatterFieldName;
+            if (fileCache?.frontmatter) {
+              const {
+                [iconFrontmatterName]: newIconName,
+                [iconColorFrontmatterName]: newIconColor,
+              } = fileCache.frontmatter;
+              // If `icon` property is empty, we will remove it from the data and remove the icon.
+              if (!newIconName) {
+                if (this.frontmatterCache.has(file.path)) {
+                  await this.removeSingleIcon(file);
+                  this.frontmatterCache.delete(file.path);
+                }
+                return;
               }
-            }
 
-            if (foundIcon) {
-              titleIcon.add(this, leaf.inlineTitleEl, foundIcon, {
-                fontSize: calculateInlineTitleSize(),
-              });
-            } else {
-              titleIcon.hide(leaf.inlineTitleEl);
-            }
-          }
-        }),
-      );
-
-      // Register event for frontmatter icon registration.
-      this.registerEvent(
-        this.app.metadataCache.on('resolve', async (file) => {
-          if (!this.getSettings().iconInFrontmatterEnabled) {
-            return;
-          }
-
-          const fileCache = this.app.metadataCache.getFileCache(file);
-          const iconFrontmatterName =
-            this.getSettings().iconInFrontmatterFieldName;
-          const iconColorFrontmatterName =
-            this.getSettings().iconColorInFrontmatterFieldName;
-          if (fileCache?.frontmatter) {
-            const {
-              [iconFrontmatterName]: newIconName,
-              [iconColorFrontmatterName]: newIconColor,
-            } = fileCache.frontmatter;
-            // If `icon` property is empty, we will remove it from the data and remove the icon.
-            if (!newIconName) {
-              if (this.frontmatterCache.has(file.path)) {
-                await this.removeSingleIcon(file);
-                this.frontmatterCache.delete(file.path);
-              }
-              return;
-            }
-
-            if (typeof newIconName !== 'string') {
-              new Notice(
-                `[${config.PLUGIN_NAME}] Frontmatter property type \`icon\` has to be of type \`text\`.`,
-              );
-              return;
-            }
-
-            if (newIconColor && typeof newIconColor !== 'string') {
-              new Notice(
-                `[${config.PLUGIN_NAME}] Frontmatter property type \`iconColor\` has to be of type \`text\`.`,
-              );
-              return;
-            }
-
-            let iconColor = newIconColor;
-            if (isHexadecimal(iconColor)) {
-              iconColor = stringToHex(iconColor);
-            }
-
-            const cachedIcon = IconCache.getInstance().get(file.path);
-            if (
-              newIconName === cachedIcon?.iconNameWithPrefix &&
-              iconColor === cachedIcon?.iconColor
-            ) {
-              return;
-            }
-
-            this.frontmatterCache.add(file.path);
-            try {
-              if (!emoji.isEmoji(newIconName)) {
-                saveIconToIconPack(this, newIconName);
-              }
-            } catch (e) {
-              logger.warn(
-                `Something went wrong while saving icon to icon pack (error: ${e})`,
-              );
-              new Notice(e.message);
-              return;
-            }
-
-            dom.createIconNode(this, file.path, newIconName, {
-              color: iconColor,
-            });
-            this.addFolderIcon(file.path, newIconName);
-            this.addIconColor(file.path, iconColor);
-            IconCache.getInstance().set(file.path, {
-              iconNameWithPrefix: newIconName,
-              iconColor,
-            });
-
-            // Update icon in tab when setting is enabled.
-            if (this.getSettings().iconInTabsEnabled) {
-              const tabLeaves = iconTabs.getTabLeavesOfFilePath(
-                this,
-                file.path,
-              );
-              for (const tabLeaf of tabLeaves) {
-                iconTabs.update(
-                  this,
-                  newIconName,
-                  tabLeaf.tabHeaderInnerIconEl,
+              if (typeof newIconName !== 'string') {
+                new Notice(
+                  `[${config.PLUGIN_NAME}] Frontmatter property type \`icon\` has to be of type \`text\`.`,
                 );
+                return;
+              }
+
+              if (newIconColor && typeof newIconColor !== 'string') {
+                new Notice(
+                  `[${config.PLUGIN_NAME}] Frontmatter property type \`iconColor\` has to be of type \`text\`.`,
+                );
+                return;
+              }
+
+              let iconColor = newIconColor;
+              if (isHexadecimal(iconColor)) {
+                iconColor = stringToHex(iconColor);
+              }
+
+              const cachedIcon = IconCache.getInstance().get(file.path);
+              if (
+                newIconName === cachedIcon?.iconNameWithPrefix &&
+                iconColor === cachedIcon?.iconColor
+              ) {
+                return;
+              }
+
+              this.frontmatterCache.add(file.path);
+              try {
+                if (!emoji.isEmoji(newIconName)) {
+                  saveIconToIconPack(this, newIconName);
+                }
+              } catch (e) {
+                logger.warn(
+                  `Something went wrong while saving icon to icon pack (error: ${e})`,
+                );
+                new Notice(e.message);
+                return;
+              }
+
+              dom.createIconNode(this, file.path, newIconName, {
+                color: iconColor,
+              });
+              this.addFolderIcon(file.path, newIconName);
+              this.addIconColor(file.path, iconColor);
+              IconCache.getInstance().set(file.path, {
+                iconNameWithPrefix: newIconName,
+                iconColor,
+              });
+
+              // Update icon in tab when setting is enabled.
+              if (this.getSettings().iconInTabsEnabled) {
+                const tabLeaves = iconTabs.getTabLeavesOfFilePath(
+                  this,
+                  file.path,
+                );
+                for (const tabLeaf of tabLeaves) {
+                  iconTabs.update(
+                    this,
+                    newIconName,
+                    tabLeaf.tabHeaderInnerIconEl,
+                  );
+                }
+              }
+
+              // Update icon in title when setting is enabled.
+              if (this.getSettings().iconInTitleEnabled) {
+                this.addIconInTitle(newIconName);
               }
             }
+          }),
+        );
 
-            // Update icon in title when setting is enabled.
-            if (this.getSettings().iconInTitleEnabled) {
-              this.addIconInTitle(newIconName);
+        // Register active leaf change event for adding icon of file to tab.
+        this.registerEvent(
+          this.app.workspace.on('active-leaf-change', (leaf: WorkspaceLeaf) => {
+            if (!this.getSettings().iconInTabsEnabled) {
+              return;
             }
-          }
-        }),
-      );
 
-      // Register active leaf change event for adding icon of file to tab.
-      this.registerEvent(
-        this.app.workspace.on('active-leaf-change', (leaf: WorkspaceLeaf) => {
-          if (!this.getSettings().iconInTabsEnabled) {
-            return;
-          }
-
-          // TODO: Maybe change in the future to a more optimal solution.
-          // Fixes a problem when the file was clicked twice in the same tab.
-          // See https://github.com/FlorianWoelki/obsidian-iconize/issues/208.
-          if (leaf.view.getViewType() === 'file-explorer') {
-            for (const openedFile of getAllOpenedFiles(this)) {
-              const leaf = openedFile.leaf as TabHeaderLeaf;
-              const iconColor = this.getIconColor(leaf.view.file.path);
-              iconTabs.add(this, openedFile.path, leaf.tabHeaderInnerIconEl, {
-                iconColor,
-              });
+            // TODO: Maybe change in the future to a more optimal solution.
+            // Fixes a problem when the file was clicked twice in the same tab.
+            // See https://github.com/FlorianWoelki/obsidian-iconize/issues/208.
+            if (leaf.view.getViewType() === 'file-explorer') {
+              for (const openedFile of getAllOpenedFiles(this)) {
+                const leaf = openedFile.leaf as TabHeaderLeaf;
+                const iconColor = this.getIconColor(leaf.view.file.path);
+                iconTabs.add(this, openedFile.path, leaf.tabHeaderInnerIconEl, {
+                  iconColor,
+                });
+              }
+              return;
             }
-            return;
-          }
 
-          if (leaf.view.getViewType() !== 'markdown') {
-            return;
-          }
-
-          const tabHeaderLeaf = leaf as TabHeaderLeaf;
-          if (tabHeaderLeaf.view.file) {
-            const iconColor = this.getIconColor(tabHeaderLeaf.view.file.path);
-            iconTabs.add(
-              this,
-              tabHeaderLeaf.view.file.path,
-              tabHeaderLeaf.tabHeaderInnerIconEl,
-              {
-                iconColor,
-              },
-            );
-          }
-        }),
-      );
-
-      this.registerEvent(
-        this.app.workspace.on('css-change', () => {
-          for (const openedFile of getAllOpenedFiles(this)) {
-            const activeView = openedFile.leaf.view as InlineTitleView;
-            if (activeView instanceof MarkdownView) {
-              titleIcon.updateStyle(activeView.inlineTitleEl, {
-                fontSize: calculateInlineTitleSize(),
-              });
+            if (leaf.view.getViewType() !== 'markdown') {
+              return;
             }
-          }
-        }),
-      );
+
+            const tabHeaderLeaf = leaf as TabHeaderLeaf;
+            if (tabHeaderLeaf.view.file) {
+              const iconColor = this.getIconColor(tabHeaderLeaf.view.file.path);
+              iconTabs.add(
+                this,
+                tabHeaderLeaf.view.file.path,
+                tabHeaderLeaf.tabHeaderInnerIconEl,
+                {
+                  iconColor,
+                },
+              );
+            }
+          }),
+        );
+
+        this.registerEvent(
+          this.app.workspace.on(
+            'css-change',
+            debounce(() => {
+              for (const openedFile of getAllOpenedFiles(this)) {
+                const activeView = openedFile.leaf.view as InlineTitleView;
+                if (activeView instanceof MarkdownView) {
+                  titleIcon.updateStyle(activeView.inlineTitleEl, {
+                    fontSize: calculateInlineTitleSize(),
+                  });
+                }
+              }
+            }, 100),
+          ),
+        );
+      }
     });
   }
 

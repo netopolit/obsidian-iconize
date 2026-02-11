@@ -1,5 +1,5 @@
 import { vi, it, describe, beforeEach, expect, MockInstance } from 'vitest';
-import { Plugin, TAbstractFile } from 'obsidian';
+import { Plugin, TAbstractFile, TFile } from 'obsidian';
 import { CustomRule } from '@app/settings/data';
 import config from '@app/config';
 import dom from './util/dom';
@@ -42,14 +42,11 @@ describe('isApplicable', () => {
   let file: TAbstractFile;
 
   beforeEach(() => {
+    const mockFile = Object.create(TFile.prototype);
     plugin = {
       app: {
         vault: {
-          adapter: {
-            stat: (): any => ({
-              type: 'file',
-            }),
-          },
+          getAbstractFileByPath: (): any => mockFile,
         },
       },
     } as any;
@@ -65,30 +62,30 @@ describe('isApplicable', () => {
     } as any;
   });
 
-  it('should return `false` if metadata is not available', async () => {
-    plugin.app.vault.adapter.stat = (): any => null;
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(false);
+  it('should return `false` if file is not found in vault', () => {
+    plugin.app.vault.getAbstractFileByPath = (): any => null;
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(false);
   });
 
-  it('should return `false` if the rule does not match with the name', async () => {
+  it('should return `false` if the rule does not match with the name', () => {
     rule.rule = 'test1';
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(false);
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(false);
     rule.rule = '.*-test';
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(false);
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(false);
   });
 
-  it('should return `false` if the rule does not match the type', async () => {
+  it('should return `false` if the rule does not match the type', () => {
     rule.for = 'folders';
     rule.rule = 'test';
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(false);
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(false);
     rule.rule = 'test.*';
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(false);
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(false);
   });
 
-  it('should return `true` if the rule matches the name and type', async () => {
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(true);
+  it('should return `true` if the rule matches the name and type', () => {
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(true);
     rule.rule = 'test.*';
-    expect(await customRule.isApplicable(plugin, rule, file.path)).toBe(true);
+    expect(customRule.isApplicable(plugin, rule, file.path)).toBe(true);
   });
 });
 
@@ -109,18 +106,17 @@ describe('removeFromAllFiles', () => {
       icon: 'IbTest',
       order: 0,
     };
+    const mockFile = Object.create(TFile.prototype);
     plugin = {
       app: {
         vault: {
-          adapter: {
-            stat: () => ({ type: 'file' }),
-          },
+          getAbstractFileByPath: () => mockFile,
         },
       },
     } as any;
   });
 
-  it('should call `removeIconInNode` when nodes are found and match the custom rule', async () => {
+  it('should call `removeIconInNode` when nodes are found and match the custom rule', () => {
     const node = document.createElement('div');
     node.setAttribute('data-path', 'test');
     const icon = document.createElement('div');
@@ -129,11 +125,11 @@ describe('removeFromAllFiles', () => {
     node.appendChild(icon);
     document.body.appendChild(node);
 
-    await customRule.removeFromAllFiles(plugin, rule);
+    customRule.removeFromAllFiles(plugin, rule);
     expect(removeIconInNode).toBeCalledTimes(1);
   });
 
-  it('should not call `removeIconInNode` when nodes are found but do not match the custom rule', async () => {
+  it('should not call `removeIconInNode` when nodes are found but do not match the custom rule', () => {
     const node = document.createElement('div');
     node.setAttribute('data-path', 'foo');
     const icon = document.createElement('div');
@@ -142,11 +138,11 @@ describe('removeFromAllFiles', () => {
     node.appendChild(icon);
     document.body.appendChild(node);
 
-    await customRule.removeFromAllFiles(plugin, rule);
+    customRule.removeFromAllFiles(plugin, rule);
     expect(removeIconInNode).toBeCalledTimes(0);
   });
 
-  it('should not call `removeIconInNode` when nodes are found but do not match the custom rule `for` property', async () => {
+  it('should not call `removeIconInNode` when nodes are found but do not match the custom rule `for` property', () => {
     rule.for = 'folders';
     const node = document.createElement('div');
     node.setAttribute('data-path', 'test');
@@ -156,17 +152,17 @@ describe('removeFromAllFiles', () => {
     node.appendChild(icon);
     document.body.appendChild(node);
 
-    await customRule.removeFromAllFiles(plugin, rule);
+    customRule.removeFromAllFiles(plugin, rule);
     expect(removeIconInNode).toBeCalledTimes(0);
   });
 
-  it('should not call `removeIconInNode` when `data-path` attribute in parent is not found', async () => {
+  it('should not call `removeIconInNode` when `data-path` attribute in parent is not found', () => {
     const icon = document.createElement('div');
     icon.setAttribute(config.ICON_ATTRIBUTE_NAME, 'IbTest');
     icon.classList.add('iconize-icon');
     document.body.appendChild(icon);
 
-    await customRule.removeFromAllFiles(plugin, rule);
+    customRule.removeFromAllFiles(plugin, rule);
     expect(removeIconInNode).toBeCalledTimes(0);
   });
 });
@@ -216,12 +212,11 @@ describe('add', () => {
     createIconNode = vi.spyOn(dom, 'createIconNode');
     // eslint-disable-next-line @typescript-eslint/no-empty-function
     createIconNode.mockImplementationOnce(() => {});
+    const mockFile = Object.create(TFile.prototype);
     plugin = {
       app: {
         vault: {
-          adapter: {
-            stat: () => ({ type: 'file' }),
-          },
+          getAbstractFileByPath: () => mockFile,
         },
       },
       getIconNameFromPath: () => false,
@@ -238,26 +233,26 @@ describe('add', () => {
     };
   });
 
-  it('should add the icon to the node', async () => {
+  it('should add the icon to the node', () => {
     const node = document.createElement('div');
     node.setAttribute('data-path', 'test');
     document.body.appendChild(node);
 
-    const result = await customRule.add(plugin, rule, file);
+    const result = customRule.add(plugin, rule, file);
     expect(createIconNode).toBeCalledTimes(1);
     expect(result).toBe(true);
   });
 
-  it('should not add the icon to the node if the node already has an icon', async () => {
+  it('should not add the icon to the node if the node already has an icon', () => {
     plugin.getIconNameFromPath = () => 'IbTest';
-    const result = await customRule.add(plugin, rule, file);
+    const result = customRule.add(plugin, rule, file);
     expect(createIconNode).toBeCalledTimes(0);
     expect(result).toBe(false);
   });
 
-  it('should not add the icon to the node if the node does not match the rule', async () => {
+  it('should not add the icon to the node if the node does not match the rule', () => {
     rule.rule = 'test1';
-    const result = await customRule.add(plugin, rule, file);
+    const result = customRule.add(plugin, rule, file);
     expect(createIconNode).toBeCalledTimes(0);
     expect(result).toBe(false);
   });
@@ -289,13 +284,12 @@ describe('doesMatchPath', () => {
 });
 
 describe('getFileItems', () => {
-  it('should return the file items which are applicable to the custom rule', async () => {
+  it('should return the file items which are applicable to the custom rule', () => {
+    const mockFile = Object.create(TFile.prototype);
     const plugin = {
       app: {
         vault: {
-          adapter: {
-            stat: () => ({ type: 'file' }),
-          },
+          getAbstractFileByPath: () => mockFile,
         },
       },
       getRegisteredFileExplorers: () => [
@@ -329,7 +323,7 @@ describe('getFileItems', () => {
       icon: 'test',
       order: 0,
     };
-    const result = await customRule.getFileItems(plugin, rule);
+    const result = customRule.getFileItems(plugin, rule);
     expect(result.length).toBe(2);
   });
 });

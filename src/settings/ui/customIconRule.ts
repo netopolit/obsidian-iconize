@@ -48,18 +48,18 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
    * @param rule Rule that will be used to update all the icons for all opened files.
    * @param remove Whether to remove the icons that are applicable to the rule or not.
    */
-  private async updateIconTabs(
+  private updateIconTabs(
     rule: CustomRule,
     remove: boolean,
     cachedPaths: string[] = [],
-  ): Promise<void> {
+  ): void {
     if (this.plugin.getSettings().iconInTabsEnabled) {
       for (const openedFile of getAllOpenedFiles(this.plugin)) {
         if (cachedPaths.includes(openedFile.path)) {
           continue;
         }
 
-        const applicable = await customRule.isApplicable(
+        const applicable = customRule.isApplicable(
           this.plugin,
           rule,
           openedFile.path,
@@ -145,7 +145,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
 
             saveIconToIconPack(this.plugin, rule.icon);
 
-            await customRule.addToAllFiles(this.plugin, rule);
+            customRule.addToAllFiles(this.plugin, rule);
             this.updateIconTabs(rule, false);
           };
           modal.open();
@@ -175,7 +175,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
         otherRule.order = otherRule.order - valueForReorder;
         rule.order = currentOrder + valueForReorder;
         // Refreshes the DOM.
-        await customRule.removeFromAllFiles(this.plugin, oldRule);
+        customRule.removeFromAllFiles(this.plugin, oldRule);
         await this.plugin.saveIconFolderData();
 
         const addedPaths: string[] = [];
@@ -192,7 +192,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
                 continue;
               }
 
-              const added = await customRule.add(
+              const added = customRule.add(
                 this.plugin,
                 rule,
                 fileItem.file,
@@ -302,7 +302,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
           ruleTypeButton.onClick(async () => {
             const isFor: typeof rule.for = rule.for ?? 'everything';
             this.updateIconTabs(rule, true);
-            await customRule.removeFromAllFiles(this.plugin, {
+            customRule.removeFromAllFiles(this.plugin, {
               ...rule,
               for: isFor,
             });
@@ -403,10 +403,10 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
             new Notice('Custom rule updated.');
 
             // Refresh the DOM.
-            await customRule.removeFromAllFiles(this.plugin, oldRule);
+            customRule.removeFromAllFiles(this.plugin, oldRule);
             this.updateIconTabs(rule, true);
             this.plugin.getSettings().rules.forEach(async (rule) => {
-              await customRule.addToAllFiles(this.plugin, rule);
+              customRule.addToAllFiles(this.plugin, rule);
               this.updateIconTabs(rule, false);
             });
 
@@ -438,7 +438,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
           this.refreshDisplay();
           new Notice('Custom rule deleted.');
 
-          await customRule.removeFromAllFiles(this.plugin, rule);
+          customRule.removeFromAllFiles(this.plugin, rule);
 
           removeIconFromIconPack(this.plugin, rule.icon);
 
@@ -447,7 +447,7 @@ export default class CustomIconRuleSetting extends IconFolderSetting {
             .getSettings()
             .rules.filter((r) => rule.for === r.for);
           previousRules.forEach(async (previousRule) => {
-            await customRule.addToAllFiles(this.plugin, previousRule);
+            customRule.addToAllFiles(this.plugin, previousRule);
             this.updateIconTabs(previousRule, false);
           });
         });

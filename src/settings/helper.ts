@@ -9,14 +9,14 @@ import svg from '@app/lib/util/svg';
  * or in a custom rule involved.
  * @param plugin Instance of the IconizePlugin.
  */
-const refreshStyleOfIcons = async (plugin: IconizePlugin): Promise<void> => {
+const refreshStyleOfIcons = (plugin: IconizePlugin): void => {
   // Refreshes the icon style for all normally added icons.
   style.refreshIconNodes(plugin);
 
   // Refreshes the icon style for all custom icon rules, when the color of the rule is
   // not defined.
   for (const rule of customRule.getSortedRules(plugin)) {
-    const fileItems = await customRule.getFileItems(plugin, rule);
+    const fileItems = customRule.getFileItems(plugin, rule);
     for (const fileItem of fileItems) {
       const titleEl = getFileItemTitleEl(fileItem);
       const iconNode = titleEl.querySelector('.iconize-icon') as HTMLElement;

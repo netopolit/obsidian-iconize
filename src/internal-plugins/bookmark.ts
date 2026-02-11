@@ -160,6 +160,12 @@ export default class BookmarkInternalPlugin extends InternalPluginInjector {
       return;
     }
 
+    // Only wrap monkey-around once to prevent layering interceptors.
+    if (this.registered) {
+      return;
+    }
+    this.registered = true;
+
     // eslint-disable-next-line
     const self = this;
     this.plugin.register(

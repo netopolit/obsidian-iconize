@@ -12,6 +12,7 @@ interface FileExplorerView extends View {
 
 export default abstract class InternalPluginInjector {
   protected plugin: IconizePlugin;
+  protected registered = false;
 
   constructor(plugin: IconizePlugin) {
     this.plugin = plugin;

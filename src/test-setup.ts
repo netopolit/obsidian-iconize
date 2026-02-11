@@ -15,8 +15,14 @@ beforeEach(() => {
   const obsidianModuleDir = join(__dirname, '../node_modules/obsidian');
   const mainFilePath = join(obsidianModuleDir, 'main.js');
 
-  // Creates an empty `main.js` file.
-  writeFileSync(mainFilePath, '');
+  // Creates a `main.js` file with minimal class stubs needed for tests.
+  writeFileSync(
+    mainFilePath,
+    `class TAbstractFile {}
+class TFile extends TAbstractFile {}
+class TFolder extends TAbstractFile {}
+module.exports = { TAbstractFile, TFile, TFolder };`,
+  );
 
   const packageJsonPath = join(obsidianModuleDir, 'package.json');
   const packageJson = (await import(packageJsonPath)).default;
